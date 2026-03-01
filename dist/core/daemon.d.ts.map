@@ -1,0 +1,1 @@
+{"version":3,"file":"daemon.d.ts","sourceRoot":"","sources":["../../src/core/daemon.ts"],"names":[],"mappings":"AAqBA,QAAA,MAAM,WAAW,OAAO,CAAA;AACxB,QAAA,MAAM,UAAU,QAAiC,CAAA;AAEjD,QAAA,MAAM,oBAAoB,QAA8B,CAAA;AA2BxD,wBAAsB,WAAW,IAAI,OAAO,CAAC,IAAI,CAAC,CA2HjD;AAED,OAAO,EAAE,WAAW,EAAE,oBAAoB,EAAE,UAAU,EAAE,CAAA"}

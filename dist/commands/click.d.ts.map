@@ -1,0 +1,1 @@
+{"version":3,"file":"click.d.ts","sourceRoot":"","sources":["../../src/commands/click.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,IAAI,EAAE,MAAM,YAAY,CAAA;AAEtC,wBAAsB,KAAK,CAAC,IAAI,EAAE,IAAI,EAAE,CAAC,EAAE,MAAM,EAAE,CAAC,EAAE,MAAM,GAAG,OAAO,CAAC;IAAE,CAAC,EAAE,MAAM,CAAC;IAAC,CAAC,EAAE,MAAM,CAAA;CAAE,CAAC,CAG/F"}

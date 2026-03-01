@@ -1,0 +1,1 @@
+{"version":3,"file":"screenshot.d.ts","sourceRoot":"","sources":["../../src/commands/screenshot.ts"],"names":[],"mappings":"AAGA,OAAO,KAAK,EAAE,IAAI,EAAE,MAAM,YAAY,CAAA;AACtC,OAAO,EAAE,gBAAgB,EAAE,MAAM,aAAa,CAAA;AAI9C,wBAAsB,UAAU,CAAC,IAAI,EAAE,IAAI,EAAE,QAAQ,UAAO,GAAG,OAAO,CAAC,gBAAgB,CAAC,CAWvF"}
