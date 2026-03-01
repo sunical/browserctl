@@ -12,6 +12,46 @@ npm install -g browserctl
 
 This automatically installs Chromium via `playwright`.
 
+## Using with AI Agents
+
+browserctl is designed to be called by LLMs and AI agents as shell tools. The typical agent loop is:
+
+1. **`a11y`** — get the accessibility tree to understand what's on the page (buttons, links, inputs, text)
+2. **decide** — the agent reads the tree and decides what to do next
+3. **act** — run `act`, `click`, `type`, `fillform`, etc.
+4. **`screenshot`** — capture the page to visually verify the result
+5. repeat
+
+```bash
+browserctl start
+
+# Agent reads the page structure
+browserctl a11y
+# → URL: https://example.com
+# → [button] Sign in
+# → [link] Learn more
+# → ...
+
+# Agent decides to click "Sign in"
+browserctl act "click Sign in"
+
+# Agent takes a screenshot to verify the result
+browserctl screenshot
+# → /tmp/browserctl/screenshot-xyz.png  (agent reads this as an image)
+
+# Agent fills in the login form
+browserctl fillform "Email=me@example.com,Password=secret"
+browserctl keys press Enter
+
+browserctl stop
+```
+
+`think` lets agents log their reasoning as part of the session without triggering any browser action — useful for tracing agent decisions.
+
+```bash
+browserctl think "The sign in button is visible, clicking it to proceed"
+```
+
 ## CLI Quick Start
 
 ```bash
