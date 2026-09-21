@@ -4,14 +4,22 @@ export declare class Session {
     readonly id: string;
     readonly createdAt: number;
     readonly recording: boolean;
+    /**
+     * Called when the inactivity timer closes the browser. The registry uses this
+     * to drop the entry — otherwise expired sessions accumulate forever and
+     * commands against them fail with an opaque "target closed" from Playwright.
+     */
+    onExpire?: (session: Session) => void;
     private instance;
     private timeoutMs;
     private timer;
     private _lastActivity;
+    private _closed;
     private constructor();
     static create(options?: SessionOptions): Promise<Session>;
     get page(): Page;
     get lastActivity(): number;
+    get closed(): boolean;
     get url(): string;
     touch(): void;
     info(): SessionInfo;
