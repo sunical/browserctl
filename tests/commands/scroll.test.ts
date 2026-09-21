@@ -42,3 +42,31 @@ describe('scroll', () => {
     expect(scrollY).toBeGreaterThan(0)
   })
 })
+
+describe('scroll settling', () => {
+  let session: Session
+
+  beforeAll(async () => {
+    session = await Session.create({ headless: true })
+    await session.page.setContent(`<html><body style="height:5000px">tall</body></html>`)
+  })
+
+  afterAll(async () => {
+    await session.close()
+  })
+
+  it('reports the settled scroll position', async () => {
+    await session.page.evaluate(() => window.scrollTo(0, 0))
+    const result = await scroll(session.page, 'down', 100)
+    // Previously mouse.wheel() could resolve before the compositor applied the
+    // scroll, so an immediate read saw 0.
+    expect(result.scrollY).toBeGreaterThan(0)
+    expect(result.scrollY).toBe(await session.page.evaluate(() => window.scrollY))
+  })
+
+  it('returns rather than hanging when the page cannot scroll further', async () => {
+    await session.page.setContent('<html><body>short</body></html>')
+    const result = await scroll(session.page, 'down', 100)
+    expect(result.scrollY).toBe(0)
+  })
+})

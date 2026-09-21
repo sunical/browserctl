@@ -2,6 +2,11 @@ export interface SessionOptions {
     headless?: boolean;
     timeout?: number;
     record?: boolean;
+    deviceScaleFactor?: number;
+    viewport?: {
+        width: number;
+        height: number;
+    };
 }
 export interface CommandResult<T = unknown> {
     success: boolean;
@@ -10,11 +15,22 @@ export interface CommandResult<T = unknown> {
 }
 export interface ScreenshotResult {
     path: string;
-    base64: string;
+    /** Image dimensions in real pixels — CSS pixels multiplied by the scale factor. */
+    width: number;
+    height: number;
+    /**
+     * Pixels per CSS pixel. Coordinates read off this image must be divided by
+     * this before being passed to click/type/drag, which take CSS pixels.
+     */
+    deviceScaleFactor: number;
+    /** Only present when explicitly requested — see screenshot(). */
+    base64?: string;
 }
 export interface A11yResult {
     tree: string;
     url: string;
+    title: string;
+    count: number;
 }
 export interface ExtractResult {
     text: string;
@@ -24,6 +40,50 @@ export interface ActResult {
     success: boolean;
     method: string;
     selector: string;
+    target: string;
+}
+/**
+ * Page state returned alongside every mutating command, so the agent does not
+ * need a second round trip (and a second inference turn) to see the result.
+ */
+export interface Observation {
+    url: string;
+    title: string;
+    tree: string;
+    count: number;
+}
+export interface StepResult {
+    step: number;
+    command: string;
+    success: boolean;
+    data?: unknown;
+    error?: string;
+}
+export interface RunResult {
+    steps: StepResult[];
+    completed: number;
+    observation?: Observation;
+}
+export type WaitCondition = {
+    kind: 'ms';
+    ms: number;
+} | {
+    kind: 'selector';
+    selector: string;
+} | {
+    kind: 'text';
+    text: string;
+} | {
+    kind: 'gone';
+    selector: string;
+} | {
+    kind: 'networkIdle';
+} | {
+    kind: 'navigation';
+};
+export interface WaitResult {
+    waited: number;
+    condition: string;
 }
 export interface SessionInfo {
     id: string;

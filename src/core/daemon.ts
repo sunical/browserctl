@@ -1,52 +1,13 @@
 import express from 'express'
 import { mkdir, writeFile, readFile, unlink } from 'fs/promises'
-import { homedir } from 'os'
-import { join } from 'path'
 import { SessionRegistry } from './session.js'
-import { screenshot } from '../commands/screenshot.js'
-import { a11y } from '../commands/a11y.js'
-import { goto } from '../commands/goto.js'
-import { act } from '../commands/act.js'
-import { click } from '../commands/click.js'
-import { type as typeCmd } from '../commands/type.js'
-import { scroll } from '../commands/scroll.js'
-import { extract } from '../commands/extract.js'
-import { keys } from '../commands/keys.js'
-import { wait } from '../commands/wait.js'
-import { back } from '../commands/back.js'
-import { drag } from '../commands/drag.js'
-import { fillform } from '../commands/fillform.js'
-import { think } from '../commands/think.js'
-import { SessionOptions } from '../types.js'
-
-const DAEMON_PORT = 3756
-const CONFIG_DIR = join(homedir(), '.browserctl')
-const PORT_FILE = join(CONFIG_DIR, 'port')
-const DEFAULT_SESSION_FILE = join(CONFIG_DIR, 'session')
+import { commands, executeCommand, parseScript, Args } from './dispatch.js'
+import { observe } from './observe.js'
+import { DAEMON_PORT, CONFIG_DIR, PORT_FILE, DEFAULT_SESSION_FILE } from './config.js'
+import { SessionOptions, StepResult, RunResult } from '../types.js'
 
 async function ensureConfigDir() {
   await mkdir(CONFIG_DIR, { recursive: true })
-}
-
-function withSession(
-  registry: SessionRegistry,
-  req: express.Request,
-  res: express.Response,
-  handler: (page: import('playwright').Page) => Promise<unknown>
-) {
-  const sessionId = req.params.sessionId ?? req.body?.sessionId ?? req.query.sessionId as string
-  const session = registry.get(sessionId)
-
-  if (!session) {
-    res.status(404).json({ success: false, error: `Session not found: ${sessionId}` })
-    return
-  }
-
-  session.touch()
-
-  handler(session.page)
-    .then(data => res.json({ success: true, data }))
-    .catch((err: Error) => res.status(500).json({ success: false, error: err.message }))
 }
 
 export async function startDaemon(): Promise<void> {
@@ -54,7 +15,8 @@ export async function startDaemon(): Promise<void> {
 
   const registry = new SessionRegistry()
   const app = express()
-  app.use(express.json())
+  // Observations and --full trees can be large; the default 100kb limit is too low.
+  app.use(express.json({ limit: '10mb' }))
 
   // Create session
   app.post('/sessions', async (req, res) => {
@@ -63,6 +25,8 @@ export async function startDaemon(): Promise<void> {
         headless: req.body?.headless ?? true,
         timeout: req.body?.timeout,
         record: req.body?.record ?? false,
+        deviceScaleFactor: req.body?.deviceScaleFactor,
+        viewport: req.body?.viewport,
       }
       const session = await registry.create(options)
       await writeFile(DEFAULT_SESSION_FILE, session.id)
@@ -92,63 +56,98 @@ export async function startDaemon(): Promise<void> {
     res.json({ success: true, data: { videoPath: result.videoPath } })
   })
 
-  // Commands
-  app.post('/sessions/:sessionId/screenshot', (req, res) => {
-    withSession(registry, req, res, page => screenshot(page, req.body?.fullPage ?? true))
+  /**
+   * One endpoint per command, all sharing the dispatch table so `run` and the
+   * individual routes cannot drift apart.
+   */
+  app.post('/sessions/:sessionId/:command', async (req, res) => {
+    const { sessionId, command } = req.params
+    const spec = commands[command]
+
+    if (!spec) {
+      res.status(404).json({ success: false, error: `Unknown command: ${command}` })
+      return
+    }
+
+    const session = registry.get(sessionId)
+    if (!session) {
+      res.status(404).json({
+        success: false,
+        error: `Session not found: ${sessionId}. It may have expired — run 'browserctl start'.`,
+      })
+      return
+    }
+    session.touch()
+
+    // Auto-observe: hand back the resulting page state so the agent does not
+    // need a second call (and a second inference turn) to see what changed.
+    const wantsObservation = spec.mutating && req.body?.observe !== false
+    const snapshot = async () =>
+      wantsObservation ? await observe(session.page).catch(() => undefined) : undefined
+
+    try {
+      const data = await executeCommand(session.page, command, (req.body ?? {}) as Args)
+      res.json({ success: true, data, observation: await snapshot() })
+    } catch (err) {
+      // A failure is exactly when the agent most needs to see the page, so it
+      // can recover without spending a turn asking what went wrong.
+      res.status(500).json({
+        success: false,
+        error: (err as Error).message,
+        observation: await snapshot(),
+      })
+    }
   })
 
-  app.post('/sessions/:sessionId/a11y', (req, res) => {
-    withSession(registry, req, res, page => a11y(page))
-  })
+  /** Batch: run a whole script in one round trip, observing only at the end. */
+  app.post('/sessions/:sessionId/batch/run', async (req, res) => {
+    const session = registry.get(req.params.sessionId)
+    if (!session) {
+      res.status(404).json({
+        success: false,
+        error: `Session not found: ${req.params.sessionId}. It may have expired — run 'browserctl start'.`,
+      })
+      return
+    }
+    session.touch()
 
-  app.post('/sessions/:sessionId/goto', (req, res) => {
-    withSession(registry, req, res, page => goto(page, req.body.url))
-  })
+    let steps
+    try {
+      steps = parseScript(String(req.body?.script ?? ''))
+    } catch (err) {
+      res.status(400).json({ success: false, error: (err as Error).message })
+      return
+    }
 
-  app.post('/sessions/:sessionId/act', (req, res) => {
-    withSession(registry, req, res, page => act(page, req.body.instruction))
-  })
+    if (steps.length === 0) {
+      res.status(400).json({ success: false, error: 'Script contained no commands' })
+      return
+    }
 
-  app.post('/sessions/:sessionId/click', (req, res) => {
-    withSession(registry, req, res, page => click(page, req.body.x, req.body.y))
-  })
+    const results: StepResult[] = []
+    let failed = false
+    let touchedPage = false
 
-  app.post('/sessions/:sessionId/type', (req, res) => {
-    withSession(registry, req, res, page => typeCmd(page, req.body.x, req.body.y, req.body.text))
-  })
+    for (const [index, step] of steps.entries()) {
+      try {
+        const data = await executeCommand(session.page, step.name, step.args)
+        if (commands[step.name].mutating) touchedPage = true
+        results.push({ step: index + 1, command: step.source, success: true, data })
+      } catch (err) {
+        results.push({ step: index + 1, command: step.source, success: false, error: (err as Error).message })
+        // Stop on first failure: later steps almost always assume the earlier
+        // ones landed, and blindly continuing produces confusing wreckage.
+        failed = true
+        break
+      }
+      session.touch()
+    }
 
-  app.post('/sessions/:sessionId/scroll', (req, res) => {
-    withSession(registry, req, res, page => scroll(page, req.body.direction, req.body.percent))
-  })
+    const wantsObservation = touchedPage && req.body?.observe !== false
+    const observation = wantsObservation ? await observe(session.page).catch(() => undefined) : undefined
 
-  app.post('/sessions/:sessionId/extract', (req, res) => {
-    withSession(registry, req, res, page => extract(page, req.body.selector))
-  })
-
-  app.post('/sessions/:sessionId/keys', (req, res) => {
-    withSession(registry, req, res, page => keys(page, req.body.method, req.body.value, req.body.repeat))
-  })
-
-  app.post('/sessions/:sessionId/wait', (_req, res) => {
-    wait(_req.body.ms).then(data => res.json({ success: true, data }))
-  })
-
-  app.post('/sessions/:sessionId/back', (req, res) => {
-    withSession(registry, req, res, page => back(page))
-  })
-
-  app.post('/sessions/:sessionId/drag', (req, res) => {
-    withSession(registry, req, res, page =>
-      drag(page, req.body.x1, req.body.y1, req.body.x2, req.body.y2)
-    )
-  })
-
-  app.post('/sessions/:sessionId/fillform', (req, res) => {
-    withSession(registry, req, res, page => fillform(page, req.body.fields))
-  })
-
-  app.post('/sessions/:sessionId/think', (req, res) => {
-    res.json({ success: true, data: think(req.body.reasoning) })
+    const data: RunResult = { steps: results, completed: results.filter(r => r.success).length, observation }
+    res.status(failed ? 500 : 200).json({ success: !failed, data, observation })
   })
 
   // Health check
