@@ -13,13 +13,6 @@ npm install -g github:sunical/browserctl
 Chromium is installed automatically via `playwright`. The command is
 `browserctl`.
 
-Not on the npm registry — install from GitHub. To pin a version, install a tag
-or commit:
-
-```bash
-npm install -g github:sunical/browserctl#v0.2.0
-```
-
 ## Using with AI Agents
 
 browserctl is designed to be called by LLMs and AI agents as shell tools. Two
