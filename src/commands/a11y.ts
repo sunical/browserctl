@@ -21,6 +21,9 @@ const MAX_NAME_LEN = 80
  * inside non-semantic markup.
  */
 export async function a11y(page: Page, options: { full?: boolean } = {}): Promise<A11yResult> {
+  // Same reason as extract(): mid-navigation there is no body to walk.
+  await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {})
+
   const { tree, count } = await page.evaluate(
     ({ refAttr, full, maxNameLen }) => {
       const INTERACTIVE = [
@@ -187,6 +190,8 @@ export async function a11y(page: Page, options: { full?: boolean } = {}): Promis
       for (const stale of queryDeep(document, `[${refAttr}]`)) {
         stale.removeAttribute(refAttr)
       }
+
+      if (!document.body) return { tree: '', count: 0 }
 
       if (full) {
         const walk = (node: Element, depth: number): string => {

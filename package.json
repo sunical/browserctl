@@ -1,7 +1,16 @@
 {
-  "name": "browserctl",
+  "name": "@sunical/browserctl",
   "version": "0.2.0",
   "description": "Browser automation CLI and library for AI agents",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
   "type": "module",
   "main": "dist/lib/index.js",
   "types": "dist/lib/index.d.ts",

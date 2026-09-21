@@ -7,10 +7,17 @@ Built on [Playwright](https://playwright.dev). Runs a persistent local daemon so
 ## Install
 
 ```bash
-npm install -g browserctl
+npm install -g @sunical/browserctl
 ```
 
-This automatically installs Chromium via `playwright`.
+The command is `browserctl` regardless of the scoped package name. Chromium is
+installed automatically via `playwright`.
+
+Or straight from source:
+
+```bash
+npm install -g github:sunical/browserctl
+```
 
 ## Using with AI Agents
 
@@ -55,19 +62,25 @@ state. Steps are separated by `;` or newlines and stop at the first failure.
 
 ```bash
 browserctl run '
-  goto example.com/login
+  goto your-app.test/login
   fillform "Email=me@example.com,Password=secret"
   act "click Sign in"
   wait --for-gone "#spinner"
 '
-# ✓ 1. goto example.com/login
+# ✓ 1. goto your-app.test/login
 # ✓ 2. fillform "Email=me@example.com,Password=secret"
 # ✓ 3. act "click Sign in"
 # ✓ 4. wait --for-gone "#spinner"
 #
-# URL: https://example.com/dashboard
+# URL: https://your-app.test/dashboard
+# Title: Dashboard
+# 12 interactive elements
+#
 # ...
 ```
+
+A failing step stops the run, and the snapshot still comes back so you can see
+where it stopped.
 
 Refs inside a script refer to the page as it stands when that step runs, since
 the agent never saw the intermediate pages. Prefer descriptions or selectors for
@@ -119,8 +132,7 @@ browserctl stop
 ### Session management
 
 ```bash
-browserctl start                       # start session (saves as default)
-browserctl start --new                 # start additional session, prints session ID
+browserctl start                       # start a session, print its ID, save as default
 browserctl start --no-headless         # open visible browser window
 browserctl start --timeout 1h          # custom inactivity timeout (default: 30m)
 browserctl start --record              # record session as video
@@ -156,7 +168,8 @@ browserctl act 3                       # click element [3] from the snapshot
 browserctl act "click Sign in"         # click by description (heuristic)
 browserctl click 640 400               # click at coordinates
 browserctl type 640 400 "hello"        # click then type at coordinates
-browserctl keys press Enter            # press a key (Enter, Tab, Escape, Cmd+A, ...)
+browserctl keys press Enter            # press a key (Enter, Tab, Escape, ...)
+browserctl keys press ControlOrMeta+A  # modifiers: Shift, Control, Alt, Meta, ControlOrMeta
 browserctl keys type "hello world"     # type into focused element
 browserctl keys press Tab --repeat 3   # repeat a key press
 browserctl scroll down                 # scroll down 80% of viewport
@@ -214,7 +227,7 @@ browserctl wait --for-selector "#x" --timeout 5000
 ```bash
 browserctl run 'goto example.com; act "click Learn more"'
 browserctl run --session $ID '
-  goto example.com/login
+  goto your-app.test/login
   fillform "Email=me@example.com,Password=secret"
   act "click Sign in"
   wait --for-selector "#dashboard"
@@ -227,13 +240,14 @@ browserctl run --session $ID '
 browserctl think "reasoning here"      # log reasoning without browser action
 ```
 
-All commands accept `--session <id>` to target a specific session. Without it, the last started session is used.
+Every command except `start` and `sessions` accepts `--session <id>`. Without it,
+the most recently started session is used.
 
 ## Multiple Sessions
 
 ```bash
-SESSION1=$(browserctl start --new)
-SESSION2=$(browserctl start --new)
+SESSION1=$(browserctl start)
+SESSION2=$(browserctl start)
 
 browserctl goto https://example.com --session $SESSION1
 browserctl goto https://github.com --session $SESSION2
@@ -245,7 +259,7 @@ browserctl stop --session $SESSION2
 ## Node.js Library
 
 ```typescript
-import { launch, close, goto, screenshot, a11y, act, extract } from 'browserctl'
+import { launch, close, goto, screenshot, a11y, act, extract } from '@sunical/browserctl'
 
 const browser = await launch({ headless: true })
 const { page } = browser
@@ -263,7 +277,8 @@ await close(browser)
 
 ```typescript
 // Browser lifecycle
-launch(options?)   // launch Playwright browser, returns { browser, page }
+launch(options?)   // { headless?, record?, viewport?, deviceScaleFactor? }
+                   // -> { browser, context, page }
 close(browser)     // close browser
 
 // Session management (for multi-session use)
@@ -279,12 +294,12 @@ parseScript(script)  // "goto x; act 3" -> ParsedStep[]
 
 // Commands (all take a Playwright Page as first argument)
 goto(page, url)
-screenshot(page, fullPage?, { base64? })   // base64 is opt-in
+screenshot(page, fullPage?, { base64? })   // -> { path, width, height, deviceScaleFactor }
 a11y(page, { full? })
 act(page, target)          // "3", "[3]", or "click Sign in"
 click(page, x, y)
 type(page, x, y, text)
-scroll(page, direction, percent?)
+scroll(page, direction, percent?)          // -> { direction, percent, scrollY }
 extract(page, selector?)
 keys(page, method, value, repeat?)
 wait(ms)                                   // fixed sleep
@@ -310,11 +325,12 @@ when an agent issues dozens of commands. Shared constants live in
 Commands are defined once in `src/core/dispatch.ts` and shared by the
 per-command HTTP routes and the `run` batch endpoint, so the two cannot drift.
 
-**Note:** the daemon is long-lived and keeps the code it started with. After
-upgrading browserctl, restart it so the new code takes effect:
+**Note:** the daemon is long-lived and keeps the code it started with, so after
+upgrading browserctl it will keep serving the old version until restarted:
 
 ```bash
-pkill -f browserctl && browserctl start
+pkill -f browserctl/dist/cli/daemon-entry
+browserctl start
 ```
 
 ## Limitations
