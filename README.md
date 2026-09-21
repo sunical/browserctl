@@ -7,16 +7,17 @@ Built on [Playwright](https://playwright.dev). Runs a persistent local daemon so
 ## Install
 
 ```bash
-npm install -g @sunical/browserctl
+npm install -g github:sunical/browserctl
 ```
 
-The command is `browserctl` regardless of the scoped package name. Chromium is
-installed automatically via `playwright`.
+Chromium is installed automatically via `playwright`. The command is
+`browserctl`.
 
-Or straight from source:
+Not on the npm registry — install from GitHub. To pin a version, install a tag
+or commit:
 
 ```bash
-npm install -g github:sunical/browserctl
+npm install -g github:sunical/browserctl#v0.2.0
 ```
 
 ## Using with AI Agents
