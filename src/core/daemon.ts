@@ -4,6 +4,7 @@ import { SessionRegistry } from './session.js'
 import { commands, executeCommand, parseScript, Args } from './dispatch.js'
 import { observe } from './observe.js'
 import { DAEMON_PORT, CONFIG_DIR, PORT_FILE, DEFAULT_SESSION_FILE } from './config.js'
+import { VERSION } from './version.js'
 import { SessionOptions, StepResult, RunResult } from '../types.js'
 
 async function ensureConfigDir() {
@@ -29,7 +30,10 @@ export async function startDaemon(): Promise<void> {
         viewport: req.body?.viewport,
       }
       const session = await registry.create(options)
-      await writeFile(DEFAULT_SESSION_FILE, session.id)
+      // An additional session should not hijack the default; the CLI decides.
+      if (req.body?.setDefault !== false) {
+        await writeFile(DEFAULT_SESSION_FILE, session.id)
+      }
       res.json({ success: true, data: session.info() })
     } catch (err) {
       res.status(500).json({ success: false, error: (err as Error).message })
@@ -86,7 +90,7 @@ export async function startDaemon(): Promise<void> {
       wantsObservation ? await observe(session.page).catch(() => undefined) : undefined
 
     try {
-      const data = await executeCommand(session.page, command, (req.body ?? {}) as Args)
+      const data = await session.run(() => executeCommand(session.page, command, (req.body ?? {}) as Args))
       res.json({ success: true, data, observation: await snapshot() })
     } catch (err) {
       // A failure is exactly when the agent most needs to see the page, so it
@@ -130,7 +134,7 @@ export async function startDaemon(): Promise<void> {
 
     for (const [index, step] of steps.entries()) {
       try {
-        const data = await executeCommand(session.page, step.name, step.args)
+        const data = await session.run(() => executeCommand(session.page, step.name, step.args))
         if (commands[step.name].mutating) touchedPage = true
         results.push({ step: index + 1, command: step.source, success: true, data })
       } catch (err) {
@@ -150,9 +154,20 @@ export async function startDaemon(): Promise<void> {
     res.status(failed ? 500 : 200).json({ success: !failed, data, observation })
   })
 
-  // Health check
+  // Health check. Reports the version so the CLI can detect that a daemon
+  // started before an upgrade is still serving the old code.
   app.get('/health', (_req, res) => {
-    res.json({ ok: true, sessions: registry.list().length })
+    res.json({ ok: true, sessions: registry.list().length, version: VERSION })
+  })
+
+  // Shut the daemon down so a newer one can take over.
+  app.post('/shutdown', async (_req, res) => {
+    res.json({ success: true, data: { stopped: registry.list().length } })
+    await registry.closeAll()
+    await unlink(PORT_FILE).catch(() => {})
+    await unlink(DEFAULT_SESSION_FILE).catch(() => {})
+    server.close()
+    setTimeout(() => process.exit(0), 50)
   })
 
   const server = app.listen(DAEMON_PORT, '127.0.0.1', async () => {

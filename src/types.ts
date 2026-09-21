@@ -36,6 +36,9 @@ export interface A11yResult {
 export interface ExtractResult {
   text: string
   url: string
+  /** Set when maxChars cut the text short. */
+  truncated?: boolean
+  totalChars?: number
 }
 
 export interface ActResult {

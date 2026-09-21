@@ -38,3 +38,34 @@ describe('extract', () => {
     expect(result.url).toBeTruthy()
   })
 })
+
+describe('extract --max-chars', () => {
+  let session: Session
+
+  beforeAll(async () => {
+    session = await Session.create({ headless: true })
+    await session.page.setContent(`<body>${'x'.repeat(5000)}</body>`)
+  })
+
+  afterAll(async () => {
+    await session.close()
+  })
+
+  it('returns everything by default', async () => {
+    const result = await extract(session.page)
+    expect(result.text.length).toBe(5000)
+    expect(result.truncated).toBeUndefined()
+  })
+
+  it('truncates and reports the true length', async () => {
+    const result = await extract(session.page, undefined, { maxChars: 100 })
+    expect(result.text.length).toBe(100)
+    expect(result.truncated).toBe(true)
+    expect(result.totalChars).toBe(5000)
+  })
+
+  it('does not mark short text as truncated', async () => {
+    const result = await extract(session.page, undefined, { maxChars: 99999 })
+    expect(result.truncated).toBeUndefined()
+  })
+})

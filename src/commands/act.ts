@@ -1,4 +1,4 @@
-import type { Page, Locator } from 'playwright'
+import type { Page, Frame, Locator } from 'playwright'
 import { ActResult } from '../types.js'
 import { a11y, REF_ATTR } from './a11y.js'
 
@@ -89,24 +89,42 @@ export async function act(page: Page, instruction: string): Promise<ActResult> {
   // description-matching heuristics below would have picked the wrong node.
   if (ref !== null) {
     const selector = `[${REF_ATTR}="${ref}"]`
-    // count() resolves immediately. locator.evaluate() would block for the full
-    // 30s action timeout when the ref is absent, turning a clear error into a hang.
-    if ((await page.locator(selector).count()) === 0) {
-      // No snapshot has stamped this page yet — happens inside a `run` script,
-      // where intermediate pages are never observed. Index the page now so the
-      // ref means "nth interactive element here", the same order a11y reports.
-      if ((await page.locator(`[${REF_ATTR}]`).count()) === 0) {
-        await a11y(page)
+
+    // Refs can live in any frame, and a page selector cannot cross an iframe
+    // boundary — so ask each frame. count() resolves immediately; locator
+    // .evaluate() would block for the full 30s action timeout when the ref is
+    // absent, turning a clear error into a hang.
+    const findFrame = async (): Promise<Frame | null> => {
+      for (const frame of page.frames()) {
+        const hit = await frame.locator(selector).count().catch(() => 0)
+        if (hit > 0) return frame
       }
-      if ((await page.locator(selector).count()) === 0) {
-        throw new Error(
-          `No element with ref [${ref}] on this page. Refs come from the page snapshot and ` +
-            `are invalidated by navigation or re-render — run 'a11y' again for current refs.`
-        )
+      return null
+    }
+
+    let frame = await findFrame()
+
+    if (!frame) {
+      // No snapshot has stamped this page yet — happens inside a `run` script,
+      // where intermediate pages are never observed. Index it now so the ref
+      // means "nth interactive element here", the same order a11y reports.
+      const stamped = await Promise.all(
+        page.frames().map(f => f.locator(`[${REF_ATTR}]`).count().catch(() => 0))
+      )
+      if (stamped.every(n => n === 0)) {
+        await a11y(page)
+        frame = await findFrame()
       }
     }
 
-    const locator = page.locator(selector).first()
+    if (!frame) {
+      throw new Error(
+        `No element with ref [${ref}] on this page. Refs come from the page snapshot and ` +
+          `are invalidated by navigation or re-render — run 'a11y' again for current refs.`
+      )
+    }
+
+    const locator = frame.locator(selector).first()
     const description = await locator
       .evaluate(el => `${el.tagName.toLowerCase()} "${(el as HTMLElement).innerText?.trim().slice(0, 40) ?? ''}"`)
       .catch(() => `ref [${ref}]`)

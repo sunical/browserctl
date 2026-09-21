@@ -113,7 +113,11 @@ export const commands: Record<string, CommandSpec> = {
   extract: {
     mutating: false,
     positional: [],
-    run: (page, a) => extract(page, a.selector as string | undefined),
+    numeric: ['max-chars'],
+    run: (page, a) =>
+      extract(page, a.selector as string | undefined, {
+        maxChars: a['max-chars'] === undefined ? undefined : Number(a['max-chars']),
+      }),
   },
   screenshot: {
     mutating: false,

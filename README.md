@@ -48,9 +48,20 @@ browserctl act 0        # click element [0] — exact, no guessing
 
 Snapshots list only visible, actionable elements plus headings for orientation.
 On a Wikipedia article that is ~2.8k tokens instead of the ~57k a full DOM dump
-costs, and the omitted nodes were not actionable anyway. Open shadow roots are
-traversed, so web-component pages are visible too. Use `a11y --full` on pages
-that hide their behaviour in non-semantic markup.
+costs, and the omitted nodes were not actionable anyway. Open shadow roots and
+iframes are both traversed, so web-component pages and embedded widgets are
+visible. Use `a11y --full` on pages that hide their behaviour in non-semantic
+markup.
+
+Elements inside an iframe are listed under a marker, and their refs continue
+the same numbering — `act` resolves a ref in whichever frame holds it:
+
+```
+[0] button "Main button"
+--- iframe 1 (checkout.stripe.com) ---
+[1] button "Pay now"
+[2] textbox "Card number"
+```
 
 When a command fails, the snapshot still comes back — so the agent can see where
 the page actually ended up and retry without another round trip.
@@ -132,7 +143,8 @@ browserctl stop
 ### Session management
 
 ```bash
-browserctl start                       # start a session, print its ID, save as default
+browserctl start                       # reuse the default session, or start one; prints its ID
+browserctl start --new                 # always start an additional session
 browserctl start --no-headless         # open visible browser window
 browserctl start --timeout 1h          # custom inactivity timeout (default: 30m)
 browserctl start --record              # record session as video
@@ -141,12 +153,18 @@ browserctl start --device-scale-factor 2   # retina-density screenshots
 browserctl stop                        # stop default session
 browserctl stop --session <id>         # stop a specific session
 browserctl sessions                    # list all active sessions
+browserctl restart                     # replace the daemon with this version
 ```
+
+`start` reuses the default session when it is still alive, so calling it twice
+does not leave an orphaned browser behind. Use `--new` for a second session.
 
 ### Navigation
 
 ```bash
 browserctl goto https://example.com    # navigate to URL (https:// prepended if omitted)
+browserctl goto localhost:3000         # host:port is treated as a host, not a scheme
+browserctl goto "data:text/html,<h1>hi</h1>"   # data:, file:, about: and blob: pass through
 browserctl back                        # go back in browser history
 ```
 
@@ -159,6 +177,7 @@ browserctl a11y                        # indexed interactive elements + headings
 browserctl a11y --full                 # unfiltered DOM tree (much larger)
 browserctl extract                     # extract all text content
 browserctl extract --selector "main"   # scope extraction to a CSS selector
+browserctl extract --max-chars 2000    # truncate; the true length is reported
 ```
 
 ### Interaction
@@ -300,7 +319,7 @@ act(page, target)          // "3", "[3]", or "click Sign in"
 click(page, x, y)
 type(page, x, y, text)
 scroll(page, direction, percent?)          // -> { direction, percent, scrollY }
-extract(page, selector?)
+extract(page, selector?, { maxChars? })
 keys(page, method, value, repeat?)
 wait(ms)                                   // fixed sleep
 waitFor(page, condition, timeout?)         // { kind: 'selector', selector } etc.
@@ -325,29 +344,28 @@ when an agent issues dozens of commands. Shared constants live in
 Commands are defined once in `src/core/dispatch.ts` and shared by the
 per-command HTTP routes and the `run` batch endpoint, so the two cannot drift.
 
-**Note:** the daemon is long-lived and keeps the code it started with, so after
-upgrading browserctl it will keep serving the old version until restarted:
+The daemon keeps the code it started with, so an upgrade does not reach a
+daemon that is already running. `browserctl start` compares its own version
+against the daemon's and replaces it automatically when no sessions are open;
+if sessions are open it warns instead of killing them, and `browserctl restart`
+does it deliberately.
 
-```bash
-pkill -f browserctl/dist/cli/daemon-entry
-browserctl start
-```
+Commands against one session are serialised, so two concurrent calls cannot
+interleave on the same page. Different sessions still run in parallel.
 
 ## Limitations
 
-- **iframes are not traversed.** Elements inside an `<iframe>` do not appear in
-  snapshots. Playwright can still reach them via frame locators from the library
-  API; the CLI has no way to address them yet.
-- **Closed shadow roots are invisible**, as they are to any script. Open ones
-  are traversed.
-- **No per-session command queue.** Two commands issued against the same session
-  concurrently will interleave. Use `run` to sequence work, or separate sessions
-  for parallel work.
-- **`extract` returns the whole page text** with no cap — around 20k characters
-  on a long Wikipedia article. Scope it with `--selector` when you only need a
-  region.
+- **Closed shadow roots are invisible**, as they are to any script. Open shadow
+  roots and iframes are traversed.
+- **Cross-origin iframes depend on the browser letting Playwright in.** Most
+  work; a frame that blocks script access is skipped silently rather than
+  failing the snapshot.
+- **`extract` returns the whole page text unless capped** — around 20k
+  characters on a long Wikipedia article. Use `--max-chars` or `--selector`.
 - `a11y` implements a practical subset of the accessible-name algorithm, not the
   full specification.
+- **Commands are serialised per session**, so a long-running command blocks
+  others against that same session. Use separate sessions for parallel work.
 
 ## Development
 

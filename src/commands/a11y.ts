@@ -1,4 +1,4 @@
-import type { Page } from 'playwright'
+import type { Page, Frame } from 'playwright'
 import { A11yResult } from '../types.js'
 
 /**
@@ -20,12 +20,17 @@ const MAX_NAME_LEN = 80
  * Pass `full: true` for the unfiltered tree when a page hides what it does
  * inside non-semantic markup.
  */
-export async function a11y(page: Page, options: { full?: boolean } = {}): Promise<A11yResult> {
-  // Same reason as extract(): mid-navigation there is no body to walk.
-  await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {})
-
-  const { tree, count } = await page.evaluate(
-    ({ refAttr, full, maxNameLen }) => {
+/**
+ * Scan one frame. Frames are separate execution contexts, so each has to be
+ * evaluated on its own — a page selector cannot reach across an iframe
+ * boundary the way it can across an open shadow root.
+ */
+async function scanFrame(
+  frame: Frame,
+  options: { full: boolean; startRef: number }
+): Promise<{ lines: string[]; count: number }> {
+  return frame.evaluate(
+    ({ refAttr, full, maxNameLen, startRef }) => {
       const INTERACTIVE = [
         'a[href]', 'button', 'input', 'select', 'textarea', 'summary',
         '[role]', '[onclick]', '[contenteditable="true"]',
@@ -191,7 +196,7 @@ export async function a11y(page: Page, options: { full?: boolean } = {}): Promis
         stale.removeAttribute(refAttr)
       }
 
-      if (!document.body) return { tree: '', count: 0 }
+      if (!document.body) return { lines: [] as string[], count: 0 }
 
       if (full) {
         const walk = (node: Element, depth: number): string => {
@@ -204,14 +209,14 @@ export async function a11y(page: Page, options: { full?: boolean } = {}): Promis
           for (const child of Array.from(node.children)) out += walk(child, depth + 1)
           return out
         }
-        return { tree: walk(document.body, 0), count: 0 }
+        return { lines: walk(document.body, 0).split('\n').filter(Boolean), count: 0 }
       }
 
       // One ordered pass so interactive elements and headings interleave in
       // document order — the agent reads the page the way a person would.
       const candidates = queryDeep(document.body, `${INTERACTIVE},h1,h2,h3,h4,h5,h6`)
       const lines: string[] = []
-      let ref = 0
+      let ref = startRef
 
       for (const el of candidates) {
         if (!isVisible(el)) continue
@@ -238,15 +243,55 @@ export async function a11y(page: Page, options: { full?: boolean } = {}): Promis
         ref++
       }
 
-      return { tree: lines.join('\n'), count: ref }
+      return { lines, count: ref - startRef }
     },
-    { refAttr: REF_ATTR, full: options.full ?? false, maxNameLen: MAX_NAME_LEN }
+    { refAttr: REF_ATTR, full: options.full, maxNameLen: MAX_NAME_LEN, startRef: options.startRef }
   )
+}
+
+/** Short, stable label for an iframe so the agent knows which document it is in. */
+function frameLabel(frame: Frame, index: number): string {
+  const url = frame.url()
+  if (!url || url === 'about:blank') return `iframe ${index}`
+  if (url.startsWith('about:')) return `iframe ${index} (${url})`
+  try {
+    const { host, pathname } = new URL(url)
+    const path = pathname.length > 30 ? pathname.slice(0, 30) + '…' : pathname
+    return `iframe ${index} (${host}${path === '/' ? '' : path})`
+  } catch {
+    return `iframe ${index}`
+  }
+}
+
+export async function a11y(page: Page, options: { full?: boolean } = {}): Promise<A11yResult> {
+  // Same reason as extract(): mid-navigation there is no body to walk.
+  await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {})
+
+  const full = options.full ?? false
+  const main = page.mainFrame()
+  const sections: string[] = []
+  let ref = 0
+  let iframeIndex = 0
+
+  for (const frame of page.frames()) {
+    const isMain = frame === main
+    if (!isMain) iframeIndex++
+
+    // A frame can detach mid-scan, and a still-loading one has nothing to read.
+    const result = await scanFrame(frame, { full, startRef: ref }).catch(() => null)
+    if (!result || result.lines.length === 0) continue
+
+    if (!isMain) sections.push(`--- ${frameLabel(frame, iframeIndex)} ---`)
+    sections.push(...result.lines)
+    ref += result.count
+  }
+
+  const tree = sections.join('\n').trim()
 
   return {
-    tree: tree.trim() || '(no interactive elements found — try --full)',
+    tree: tree || '(no interactive elements found — try --full)',
     url: page.url(),
     title: await page.title().catch(() => ''),
-    count,
+    count: ref,
   }
 }

@@ -90,7 +90,10 @@ export const commands = {
     extract: {
         mutating: false,
         positional: [],
-        run: (page, a) => extract(page, a.selector),
+        numeric: ['max-chars'],
+        run: (page, a) => extract(page, a.selector, {
+            maxChars: a['max-chars'] === undefined ? undefined : Number(a['max-chars']),
+        }),
     },
     screenshot: {
         mutating: false,

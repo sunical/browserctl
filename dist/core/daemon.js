@@ -4,6 +4,7 @@ import { SessionRegistry } from './session.js';
 import { commands, executeCommand, parseScript } from './dispatch.js';
 import { observe } from './observe.js';
 import { DAEMON_PORT, CONFIG_DIR, PORT_FILE, DEFAULT_SESSION_FILE } from './config.js';
+import { VERSION } from './version.js';
 async function ensureConfigDir() {
     await mkdir(CONFIG_DIR, { recursive: true });
 }
@@ -24,7 +25,10 @@ export async function startDaemon() {
                 viewport: req.body?.viewport,
             };
             const session = await registry.create(options);
-            await writeFile(DEFAULT_SESSION_FILE, session.id);
+            // An additional session should not hijack the default; the CLI decides.
+            if (req.body?.setDefault !== false) {
+                await writeFile(DEFAULT_SESSION_FILE, session.id);
+            }
             res.json({ success: true, data: session.info() });
         }
         catch (err) {
@@ -74,7 +78,7 @@ export async function startDaemon() {
         const wantsObservation = spec.mutating && req.body?.observe !== false;
         const snapshot = async () => wantsObservation ? await observe(session.page).catch(() => undefined) : undefined;
         try {
-            const data = await executeCommand(session.page, command, (req.body ?? {}));
+            const data = await session.run(() => executeCommand(session.page, command, (req.body ?? {})));
             res.json({ success: true, data, observation: await snapshot() });
         }
         catch (err) {
@@ -115,7 +119,7 @@ export async function startDaemon() {
         let touchedPage = false;
         for (const [index, step] of steps.entries()) {
             try {
-                const data = await executeCommand(session.page, step.name, step.args);
+                const data = await session.run(() => executeCommand(session.page, step.name, step.args));
                 if (commands[step.name].mutating)
                     touchedPage = true;
                 results.push({ step: index + 1, command: step.source, success: true, data });
@@ -134,9 +138,19 @@ export async function startDaemon() {
         const data = { steps: results, completed: results.filter(r => r.success).length, observation };
         res.status(failed ? 500 : 200).json({ success: !failed, data, observation });
     });
-    // Health check
+    // Health check. Reports the version so the CLI can detect that a daemon
+    // started before an upgrade is still serving the old code.
     app.get('/health', (_req, res) => {
-        res.json({ ok: true, sessions: registry.list().length });
+        res.json({ ok: true, sessions: registry.list().length, version: VERSION });
+    });
+    // Shut the daemon down so a newer one can take over.
+    app.post('/shutdown', async (_req, res) => {
+        res.json({ success: true, data: { stopped: registry.list().length } });
+        await registry.closeAll();
+        await unlink(PORT_FILE).catch(() => { });
+        await unlink(DEFAULT_SESSION_FILE).catch(() => { });
+        server.close();
+        setTimeout(() => process.exit(0), 50);
     });
     const server = app.listen(DAEMON_PORT, '127.0.0.1', async () => {
         await writeFile(PORT_FILE, String(DAEMON_PORT));

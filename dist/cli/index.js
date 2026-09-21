@@ -6,6 +6,7 @@ import { join, dirname } from 'path';
 // Only config.js — importing daemon.js here would pull playwright and express
 // into every CLI invocation, adding ~700ms of module load to every command.
 import { DAEMON_PORT, DEFAULT_SESSION_FILE, CONFIG_DIR } from '../core/config.js';
+import { VERSION } from '../core/version.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 async function api(path, body) {
@@ -92,14 +93,67 @@ function parseDuration(value) {
     const unit = match[2] ?? 'ms';
     return { ms: num, s: num * 1000, m: num * 60_000, h: num * 3_600_000 }[unit];
 }
-async function isDaemonRunning() {
+async function daemonHealth() {
     try {
         const res = await fetch(`http://127.0.0.1:${DAEMON_PORT}/health`);
-        return res.ok;
+        if (!res.ok)
+            return null;
+        return (await res.json());
     }
     catch {
-        return false;
+        return null;
     }
+}
+async function isDaemonRunning() {
+    return (await daemonHealth()) !== null;
+}
+function spawnDaemon() {
+    const daemonPath = join(__dirname, 'daemon-entry.js');
+    const child = spawn(process.execPath, [daemonPath], { detached: true, stdio: 'ignore' });
+    child.unref();
+}
+async function waitForDaemon(attempts = 20) {
+    for (let i = 0; i < attempts; i++) {
+        await new Promise(r => setTimeout(r, 250));
+        if (await isDaemonRunning())
+            return true;
+    }
+    return false;
+}
+async function stopDaemon() {
+    try {
+        const res = await fetch(`http://127.0.0.1:${DAEMON_PORT}/shutdown`, { method: 'POST' });
+        const body = (await res.json());
+        // Give the process a moment to release the port before anything rebinds it.
+        for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 100));
+            if (!(await isDaemonRunning()))
+                break;
+        }
+        return body.data?.stopped ?? 0;
+    }
+    catch {
+        return 0;
+    }
+}
+/**
+ * A daemon started before an upgrade keeps serving the old code, with no
+ * outward sign. Replace it when that is free to do, and say so plainly when
+ * it is not.
+ */
+async function reconcileDaemonVersion(health) {
+    if (health.version === VERSION)
+        return;
+    const running = health.version ?? 'an older version';
+    if (health.sessions === 0) {
+        await stopDaemon();
+        spawnDaemon();
+        await waitForDaemon();
+        return;
+    }
+    console.error(`Warning: the running daemon is ${running}, but this CLI is ${VERSION}. ` +
+        `It has ${health.sessions} active session(s), so it was left alone.\n` +
+        `Commands will keep using the old code until you run: browserctl restart`);
 }
 // --- CLI ---
 const program = new Command()
@@ -142,16 +196,26 @@ program
     .option('--viewport <WxH>', 'Viewport size in CSS pixels, e.g. 1440x900 (default: 1280x720)', parseViewport)
     .action(async (opts) => {
     await mkdir(CONFIG_DIR, { recursive: true });
-    if (!(await isDaemonRunning())) {
-        const daemonPath = join(__dirname, 'daemon-entry.js');
-        const child = spawn(process.execPath, [daemonPath], { detached: true, stdio: 'ignore' });
-        child.unref();
-        // Wait for daemon to be ready
-        for (let i = 0; i < 20; i++) {
-            await new Promise(r => setTimeout(r, 250));
-            if (await isDaemonRunning())
-                break;
-        }
+    const health = await daemonHealth();
+    if (!health) {
+        spawnDaemon();
+        await waitForDaemon();
+    }
+    else {
+        await reconcileDaemonVersion(health);
+    }
+    // Is the recorded default still alive?
+    const recorded = (await readFile(DEFAULT_SESSION_FILE, 'utf8').catch(() => '')).trim();
+    let defaultIsLive = false;
+    if (recorded) {
+        const list = await api('/sessions');
+        defaultIsLive = !!list.success && !!list.data?.some(session => session.id === recorded);
+    }
+    // Without --new, reuse it. Starting a fresh browser for every `start` was
+    // wasteful and made --new a no-op.
+    if (!opts.new && defaultIsLive) {
+        console.log(recorded);
+        return;
     }
     const result = await api('/sessions', {
         headless: opts.headless,
@@ -159,13 +223,18 @@ program
         record: !!opts.record,
         deviceScaleFactor: opts.deviceScaleFactor,
         viewport: opts.viewport,
+        // Keep the existing default pointing where it did, so stopping an
+        // additional session does not leave the original unreachable.
+        setDefault: !(opts.new && defaultIsLive),
     });
     if (!result.success) {
         console.error(result.error);
         process.exit(1);
     }
     const sessionId = result.data.id;
-    await writeFile(DEFAULT_SESSION_FILE, sessionId);
+    if (!(opts.new && defaultIsLive)) {
+        await writeFile(DEFAULT_SESSION_FILE, sessionId);
+    }
     console.log(sessionId);
 });
 // stop
@@ -189,6 +258,32 @@ program
         console.error('Cannot reach the browserctl daemon.');
         process.exit(1);
     }
+});
+// restart
+program
+    .command('restart')
+    .description('Replace the running daemon with one running this version. Closes every ' +
+    'active session. Needed after upgrading, since a daemon keeps the code it started with.')
+    .action(async () => {
+    const health = await daemonHealth();
+    if (!health) {
+        spawnDaemon();
+        if (!(await waitForDaemon())) {
+            console.error('Daemon did not come up.');
+            process.exit(1);
+        }
+        console.log(`Daemon started (${VERSION}).`);
+        return;
+    }
+    const stopped = await stopDaemon();
+    spawnDaemon();
+    if (!(await waitForDaemon())) {
+        console.error('Daemon did not come back up.');
+        process.exit(1);
+    }
+    const was = health.version ?? 'unknown';
+    console.log(`Daemon restarted (${was} -> ${VERSION})` +
+        (stopped ? `, closed ${stopped} session${stopped === 1 ? '' : 's'}.` : '.'));
 });
 // sessions
 program
@@ -321,15 +416,19 @@ program
     .command('extract')
     .description('Extract all text content from the page. Use --selector to scope to a CSS element.')
     .option('--selector <css>', 'CSS selector to scope extraction (e.g. "main", ".pricing-table")')
+    .option('--max-chars <n>', 'Truncate output to this many characters')
     .option('--session <id>', 'Session ID (default: last started)')
     .action(async (opts) => {
     const sessionId = await resolveSession(opts);
-    const result = await api(`/sessions/${sessionId}/extract`, { selector: opts.selector });
+    const result = await api(`/sessions/${sessionId}/extract`, { selector: opts.selector, 'max-chars': opts.maxChars ? Number(opts.maxChars) : undefined });
     if (!result.success) {
         console.error(result.error);
         process.exit(1);
     }
     console.log(result.data.text);
+    if (result.data.truncated) {
+        console.error(`\n[truncated: showing ${opts.maxChars} of ${result.data.totalChars} characters]`);
+    }
 });
 // keys
 mutating(program

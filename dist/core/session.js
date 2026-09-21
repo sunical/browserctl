@@ -16,6 +16,8 @@ export class Session {
     timer = null;
     _lastActivity;
     _closed = false;
+    /** Tail of the per-session command chain — see run(). */
+    queue = Promise.resolve();
     constructor(id, instance, timeoutMs, recording) {
         this.id = id;
         this.instance = instance;
@@ -46,6 +48,20 @@ export class Session {
     }
     get url() {
         return this.instance.page.url();
+    }
+    /**
+     * Serialise work against this session's page.
+     *
+     * Two commands arriving concurrently for the same session would otherwise
+     * interleave — a click landing between another command's snapshot and its
+     * action, for instance. Sessions are independent, so this only orders work
+     * within one.
+     */
+    run(task) {
+        const result = this.queue.then(task, task);
+        // Keep the chain alive after a rejection, without swallowing it for the caller.
+        this.queue = result.then(() => undefined, () => undefined);
+        return result;
     }
     touch() {
         this._lastActivity = Date.now();

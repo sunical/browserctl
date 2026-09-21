@@ -15,12 +15,23 @@ export declare class Session {
     private timer;
     private _lastActivity;
     private _closed;
+    /** Tail of the per-session command chain — see run(). */
+    private queue;
     private constructor();
     static create(options?: SessionOptions): Promise<Session>;
     get page(): Page;
     get lastActivity(): number;
     get closed(): boolean;
     get url(): string;
+    /**
+     * Serialise work against this session's page.
+     *
+     * Two commands arriving concurrently for the same session would otherwise
+     * interleave — a click landing between another command's snapshot and its
+     * action, for instance. Sessions are independent, so this only orders work
+     * within one.
+     */
+    run<T>(task: () => Promise<T>): Promise<T>;
     touch(): void;
     info(): SessionInfo;
     close(): Promise<string | undefined>;
