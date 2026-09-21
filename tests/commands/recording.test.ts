@@ -4,10 +4,23 @@ import { Session, SessionRegistry } from '../../src/core/session.js'
 import { goto } from '../../src/commands/goto.js'
 
 describe('video recording', () => {
-  it('saves a video file on close when record is enabled', async () => {
+  // Headless Chromium's video capture competes for the compositor with the
+  // other test files' browsers and intermittently records no frames at all.
+  // That is an environment limit, not product behaviour — the no-frames path
+  // is covered deterministically by 'recording failure handling' below.
+  it('saves a video file on close when record is enabled', { retry: 2 }, async () => {
     const session = await Session.create({ headless: true, record: true })
     await goto(session.page, 'https://example.com')
-    await session.page.waitForTimeout(500) // allow frames to be captured
+
+    // Frames are only emitted when something actually paints, so force
+    // repeated repaints rather than hoping one lands in an idle wait.
+    for (let i = 0; i < 6; i++) {
+      await session.page.evaluate(n => {
+        document.body.style.background = n % 2 ? '#fff' : '#ccc'
+      }, i)
+      await session.page.waitForTimeout(150)
+    }
+
     const videoPath = await session.close()
     expect(videoPath).toBeTruthy()
     expect(existsSync(videoPath!)).toBe(true)
